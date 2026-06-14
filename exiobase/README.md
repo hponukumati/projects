@@ -1,41 +1,64 @@
 # Exiobase – Interactive Trade Charts
 
-Standalone HTML page that renders three interactive trade-flow visualisations
-for the [Exiobase.eu](https://www.exiobase.eu) homepage, addressing
+Standalone showcase page for the three interactive trade-flow charts on the
+[Exiobase.eu](https://www.exiobase.eu) homepage, addressing
 [Issue #65](https://github.com/ModelEarth/projects/issues/65).
 
-## Charts included
+## Charts
 
-| # | Chart | Library | What it shows |
-|---|-------|---------|---------------|
-| 1 | **Trade Flow Map** | Chart.js (bubble) | Total bilateral trade volume per country plotted on an approximate geographic grid. Bubble size scales with trade volume. |
-| 2 | **Chord Diagram** | D3.js | Country-to-country trade dependencies. Arc width encodes each country's share of total bilateral trade; ribbon width encodes the bilateral flow between any two countries. |
-| 3 | **Sankey Diagram** | Chart.js + chartjs-chart-sankey | Major trade flows as flow-volume ribbons between economies. |
+| # | Chart | Library | Data |
+|---|-------|---------|------|
+| 1 | **Trade Flow Map** | Leaflet 1.9 + D3 SVG overlay | Mock bilateral country matrix (M EUR) |
+| 2 | **Chord Diagram** | D3.js v7 | Mock bilateral country matrix |
+| 3 | **Sankey Diagram** | Apache eCharts 5.4.3 | **Live** `trade_impact.csv` from [ModelEarth/trade-data](https://github.com/ModelEarth/trade-data) |
 
-## Data
+### Trade Flow Map
+Renders a CartoDB light-basemap via Leaflet.  
+Country bubbles are sized by total bilateral trade. Animated curved arrows show
+the top-12 country pairs by volume. Matches the tech stack of
+`profile/trade/map/index.html`.
 
-The page uses **mock Exiobase-inspired data** (USD billion) so it runs entirely
-client-side without any backend or API key. Replace the `MATRIX`, `TRADE_VOLUME`,
-and `flows` arrays in `index.html` with real Exiobase API responses to go live.
+### Chord Diagram
+D3 chord layout showing 8 major economies.  
+Arc width = total export share; ribbon width = bilateral trade between two countries.
 
-## Usage
-
-Open `index.html` directly in a browser, or serve it from any static host:
-
-```bash
-# quick local server (Python 3)
-python3 -m http.server 8080
-# then visit http://localhost:8080/exiobase/
+### Sankey Diagram
+Uses Apache eCharts (same library as `io/charts/sankey/desktop/index.html`).  
+On load, fetches the **live** CSV:
 ```
+https://raw.githubusercontent.com/ModelEarth/trade-data/main/year/2022/WM/domestic/trade_impact.csv
+```
+Falls back to a mock country-level Sankey if the fetch fails.
+
+**Metric toggle** (controls bar): switch between Trade Amount, CO₂ Emissions,
+Water Use, and Employment.
 
 ## Styling
 
-The page loads `notion.css` from
-`https://model.earth/localsite/css/styles/notion.css` and applies
-`<body class="notion">` to match the rest of the model.earth design system.
+- `<body class="notion">` is included as specified in the issue
+- `notion.css` is not yet deployed to `localsite`; inline notion-inspired styles
+  serve as the fallback so the page renders correctly today
+- Colours and typography match the model.earth design system
 
-## Dependencies (CDN, no install needed)
+## Usage
 
-- [Chart.js 4](https://www.chartjs.org/)
-- [chartjs-chart-sankey](https://github.com/kurkle/chartjs-chart-sankey)
-- [D3.js 7](https://d3js.org/)
+```bash
+# From the repo webroot
+python3 -m http.server 8887
+# Visit: http://localhost:8887/exiobase/
+```
+
+## Dependencies (CDN — no build step)
+
+| Library | Version | Used for |
+|---------|---------|----------|
+| Leaflet | 1.9.4 | Trade Flow Map basemap |
+| D3.js | 7.8.5 | Chord diagram + map SVG overlay |
+| Apache eCharts | 5.4.3 | Sankey diagram |
+
+## Related pages
+
+- Trade Flow Map prototype: `model.earth/profile/trade/map/`
+- Chord Diagram (placeholder): `model.earth/profile/charts/d3/chord-diagram/`
+- Sankey (eCharts): `model.earth/io/charts/sankey/`
+- Trade data repo: [ModelEarth/trade-data](https://github.com/ModelEarth/trade-data)
