@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+  <title>Exiobase – Interactive Trade Charts</title>
+  <link rel="shortcut icon" href="data:image/x-icon;," type="image/x-icon" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Notion-style base CSS from model.earth -->
+  <link rel="stylesheet" href="https://model.earth/localsite/css/styles/notion.css" />
+
+  <!-- Chart.js for Trade Flow Map & Sankey -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <!-- chartjs-chart-sankey plugin -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.12.0/dist/chartjs-chart-sankey.min.js"></script>
+  <!-- D3 for Chord Diagram -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+
+  <style>
+    /* ── layout ── */
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #f7f7f5;
+      color: #37352f;
+      margin: 0;
+      padding: 0 0 60px;
+    }
+    .page-header {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 48px 24px 8px;
+    }
+    .page-header h1 {
+      font-size: 2.2rem;
+      font-weight: 700;
+      margin: 0 0 8px;
+    }
+    .page-header p {
+      color: #6b6b68;
+      margin: 0;
+      font-size: 1rem;
+    }
+    .charts-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 32px;
+      max-width: 900px;
+      margin: 40px auto 0;
+      padding: 0 24px;
+    }
+    @media (min-width: 860px) {
+      .charts-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      .chart-card.wide {
+        grid-column: 1 / -1;
+      }
+    }
+
+    /* ── card ── */
+    .chart-card {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 0 0 1px rgba(0,0,0,.04);
+      padding: 24px;
+    }
+    .chart-card h2 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin: 0 0 4px;
+    }
+    .chart-card .subtitle {
+      font-size: 0.82rem;
+      color: #9b9b97;
+      margin: 0 0 20px;
+    }
+    .chart-wrap {
+      position: relative;
+    }
+    .chart-wrap canvas {
+      width: 100% !important;
+    }
+
+    /* ── chord diagram ── */
+    #chord-container {
+      width: 100%;
+      overflow: hidden;
+    }
+    #chord-container svg {
+      display: block;
+      margin: 0 auto;
+    }
+    .chord-tooltip {
+      position: fixed;
+      background: rgba(37,36,31,.88);
+      color: #fff;
+      padding: 7px 12px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .15s;
+      white-space: nowrap;
+      z-index: 999;
+    }
+  </style>
+</head>
+<body class="notion">
+
+  <div class="page-header">
+    <h1>Exiobase – Global Trade Flows</h1>
+    <p>Interactive visualisations of country-to-country trade dependencies based on Exiobase data.
+       Hover over any element for details.</p>
+  </div>
+
+  <div class="charts-grid">
+
+    <!-- 1 · Trade Flow Map -->
+    <div class="chart-card wide">
+      <h2>Trade Flow Map</h2>
+      <p class="subtitle">Bubble size = total trade volume (exports + imports, USD billion). Hover for country detail.</p>
+      <div class="chart-wrap" style="height:360px">
+        <canvas id="tradeFlowMap"></canvas>
+      </div>
+    </div>
+
+    <!-- 2 · Chord Diagram -->
+    <div class="chart-card">
+      <h2>Chord Diagram</h2>
+      <p class="subtitle">Country-to-country trade dependencies. Arc width = trade share.</p>
+      <div id="chord-container"></div>
+      <div class="chord-tooltip" id="chordTooltip"></div>
+    </div>
+
+    <!-- 3 · Sankey Diagram -->
+    <div class="chart-card">
+      <h2>Sankey Diagram</h2>
+      <p class="subtitle">Trade flow volumes between major economies (USD billion).</p>
+      <div class="chart-wrap" style="height:340px">
+        <canvas id="sankeyChart"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+  /* ══════════════════════════════════════════════════
+     Mock trade data (Exiobase-inspired, USD billion)
+     ══════════════════════════════════════════════════ */
+  const COUNTRIES = ['USA', 'China', 'Germany', 'Japan', 'India', 'UK', 'France', 'Brazil'];
+  const COLORS = [
+    '#4e79a7','#f28e2b','#e15759','#76b7b2',
+    '#59a14f','#edc948','#b07aa1','#ff9da7'
+  ];
+
+  // Total trade volume per country (exports + imports, USD bn)
+  const TRADE_VOLUME = [5400, 6200, 3100, 2300, 1900, 2100, 1700, 800];
+
+  // Approximate geographic positions mapped to a 2-D plane
+  // x = longitude-ish (0-100), y = latitude-ish (0-100)
+  const GEO = [
+    { x: 22, y: 48 }, // USA
+    { x: 72, y: 50 }, // China
+    { x: 50, y: 38 }, // Germany
+    { x: 80, y: 44 }, // Japan
+    { x: 68, y: 58 }, // India
+    { x: 47, y: 34 }, // UK
+    { x: 48, y: 38 }, // France
+    { x: 32, y: 70 }, // Brazil
+  ];
+
+  // Bilateral trade matrix (symmetric, USD bn)
+  const MATRIX = [
+    // USA  China  Ger    Jpn    Ind    UK     Fra    Bra
+    [  0,   690,   260,   230,   130,   280,   120,   110 ], // USA
+    [690,     0,   240,   310,   340,   110,    90,   140 ], // China
+    [260,   240,     0,   120,    80,   210,   170,    60 ], // Germany
+    [230,   310,   120,     0,    80,    80,    50,    30 ], // Japan
+    [130,   340,    80,    80,     0,    60,    40,    30 ], // India
+    [280,   110,   210,    80,    60,     0,   120,    30 ], // UK
+    [120,    90,   170,    50,    40,   120,     0,    25 ], // France
+    [110,   140,    60,    30,    30,    30,    25,     0 ], // Brazil
+  ];
+
+  /* ──────────────────────────────────────────────
+     1 · TRADE FLOW MAP  (bubble chart)
+  ─────────────────────────────────────────────── */
+  (function buildTradeFlowMap() {
+    const ctx = document.getElementById('tradeFlowMap').getContext('2d');
+
+    const datasets = COUNTRIES.map((c, i) => ({
+      label: c,
+      data: [{ x: GEO[i].x, y: GEO[i].y, r: Math.sqrt(TRADE_VOLUME[i]) / 3.5 }],
+      backgroundColor: COLORS[i] + 'cc',
+      borderColor: COLORS[i],
+      borderWidth: 1.5,
+    }));
+
+    new Chart(ctx, {
+      type: 'bubble',
+      data: { datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: 'right',
+            labels: { boxWidth: 12, font: { size: 11 } },
+          },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const vol = TRADE_VOLUME[ctx.datasetIndex];
+                return ` ${ctx.dataset.label}: $${vol.toLocaleString()}B total trade`;
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            min: 0, max: 100,
+            title: { display: true, text: 'West ← → East (approximate)', font: { size: 11 } },
+            ticks: { display: false },
+            grid: { color: '#f0eeea' },
+          },
+          y: {
+            min: 0, max: 100,
+            title: { display: true, text: 'South ↑ North', font: { size: 11 } },
+            ticks: { display: false },
+            grid: { color: '#f0eeea' },
+          },
+        },
+      },
+    });
+  })();
+
+  /* ──────────────────────────────────────────────
+     2 · CHORD DIAGRAM  (D3)
+  ─────────────────────────────────────────────── */
+  (function buildChordDiagram() {
+    const container = document.getElementById('chord-container');
+    const tooltip   = document.getElementById('chordTooltip');
+
+    const w = Math.min(container.clientWidth || 380, 420);
+    const h = w;
+    const r = (w / 2) - 50;
+
+    const chord = d3.chord().padAngle(0.04).sortSubgroups(d3.descending);
+    const arc   = d3.arc().innerRadius(r).outerRadius(r + 22);
+    const ribbon = d3.ribbon().radius(r);
+    const chords = chord(MATRIX);
+
+    const svg = d3.select('#chord-container')
+      .append('svg')
+        .attr('viewBox', `0 0 ${w} ${h}`)
+        .attr('width', w).attr('height', h);
+
+    const g = svg.append('g')
+      .attr('transform', `translate(${w/2},${h/2})`);
+
+    // Groups (arcs)
+    const group = g.append('g')
+      .selectAll('g')
+      .data(chords.groups)
+      .join('g');
+
+    group.append('path')
+      .attr('fill', d => COLORS[d.index])
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 1)
+      .attr('d', arc)
+      .on('mousemove', (event, d) => {
+        const total = MATRIX[d.index].reduce((s,v) => s+v, 0);
+        tooltip.style.opacity = '1';
+        tooltip.style.left = (event.clientX + 12) + 'px';
+        tooltip.style.top  = (event.clientY - 28) + 'px';
+        tooltip.textContent = `${COUNTRIES[d.index]}: $${total.toLocaleString()}B bilateral trade`;
+      })
+      .on('mouseleave', () => { tooltip.style.opacity = '0'; });
+
+    group.append('text')
+      .each(d => { d.angle = (d.startAngle + d.endAngle) / 2; })
+      .attr('dy', '0.35em')
+      .attr('transform', d =>
+        `rotate(${(d.angle * 180) / Math.PI - 90}) translate(${r + 28}) ${d.angle > Math.PI ? 'rotate(180)' : ''}`)
+      .attr('text-anchor', d => d.angle > Math.PI ? 'end' : 'start')
+      .attr('font-size', '10px')
+      .attr('fill', '#37352f')
+      .text(d => COUNTRIES[d.index]);
+
+    // Ribbons
+    g.append('g')
+      .attr('fill-opacity', 0.72)
+      .selectAll('path')
+      .data(chords)
+      .join('path')
+        .attr('d', ribbon)
+        .attr('fill', d => COLORS[d.source.index])
+        .attr('stroke', '#fff')
+        .attr('stroke-width', 0.5)
+        .on('mousemove', (event, d) => {
+          const val = MATRIX[d.source.index][d.target.index];
+          tooltip.style.opacity = '1';
+          tooltip.style.left = (event.clientX + 12) + 'px';
+          tooltip.style.top  = (event.clientY - 28) + 'px';
+          tooltip.textContent =
+            `${COUNTRIES[d.source.index]} ↔ ${COUNTRIES[d.target.index]}: $${val.toLocaleString()}B`;
+        })
+        .on('mouseleave', () => { tooltip.style.opacity = '0'; });
+  })();
+
+  /* ──────────────────────────────────────────────
+     3 · SANKEY DIAGRAM  (Chart.js + sankey plugin)
+  ─────────────────────────────────────────────── */
+  (function buildSankeyChart() {
+    const ctx = document.getElementById('sankeyChart').getContext('2d');
+
+    // Top bilateral flows to keep the chart readable
+    const flows = [
+      { from: 'USA',     to: 'China',   flow: 690 },
+      { from: 'China',   to: 'USA',     flow: 690 },
+      { from: 'China',   to: 'Japan',   flow: 310 },
+      { from: 'China',   to: 'India',   flow: 340 },
+      { from: 'USA',     to: 'UK',      flow: 280 },
+      { from: 'USA',     to: 'Germany', flow: 260 },
+      { from: 'Germany', to: 'UK',      flow: 210 },
+      { from: 'Germany', to: 'France',  flow: 170 },
+      { from: 'Japan',   to: 'China',   flow: 310 },
+      { from: 'India',   to: 'China',   flow: 340 },
+      { from: 'UK',      to: 'France',  flow: 120 },
+      { from: 'Brazil',  to: 'China',   flow: 140 },
+    ];
+
+    const colorMap = Object.fromEntries(COUNTRIES.map((c, i) => [c, COLORS[i]]));
+
+    new Chart(ctx, {
+      type: 'sankey',
+      data: {
+        datasets: [{
+          label: 'Trade (USD bn)',
+          data: flows,
+          colorFrom: d => colorMap[d.dataset.data[d.dataIndex].from] ?? '#999',
+          colorTo:   d => colorMap[d.dataset.data[d.dataIndex].to]   ?? '#999',
+          colorMode: 'gradient',
+          borderWidth: 0,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const d = ctx.dataset.data[ctx.dataIndex];
+                return ` ${d.from} → ${d.to}: $${d.flow.toLocaleString()}B`;
+              },
+            },
+          },
+          legend: { display: false },
+        },
+      },
+    });
+  })();
+  </script>
+</body>
+</html>
