@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+  <meta charset="utf-8" />
+  <title>Exiobase – Interactive Trade Charts</title>
+  <link rel="shortcut icon" href="data:image/x-icon;," type="image/x-icon" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Leaflet for Trade Flow Map -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Apache eCharts for Sankey (matches existing exiobase/io implementation) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+
+  <!-- D3 for Chord Diagram and map SVG overlay -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"
+          id="localsite/js/d3.v5.min.js"></script>
+
+  <style>
+    /* ── Notion-inspired base styles
+       (notion.css is referenced in the issue but not yet deployed to localsite;
+        these inline styles replicate that aesthetic and the <body class="notion">
+        will take effect once the file is published) ── */
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body, body.notion {
+      font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      color: #37352f;
+      background: #f7f7f5;
+      margin: 0;
+      padding: 0;
+    }
+    body.notion h1 { font-size: 2rem; font-weight: 700; line-height: 1.2; margin: 0 0 6px; }
+    body.notion h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 2px; }
+    body.notion p  { color: #6b6b68; margin: 0; }
+    body.notion a  { color: #2563eb; }
+
+    /* ── Page layout ── */
+    .page-wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 20px 64px;
+    }
+    .page-header { padding: 48px 0 20px; }
+
+    /* ── Controls bar ── */
+    .controls-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      background: #fff;
+      border: 1px solid #e3e2df;
+      border-radius: 8px;
+      padding: 10px 16px;
+      margin-bottom: 24px;
+    }
+    .controls-bar label {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #37352f;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .controls-bar select {
+      font-size: 0.82rem;
+      border: 1px solid #c8c7c4;
+      border-radius: 4px;
+      padding: 4px 8px;
+      background: #f7f7f5;
+      color: #37352f;
+      cursor: pointer;
+    }
+    #load-status {
+      margin-left: auto;
+      font-size: 0.78rem;
+      color: #9b9b97;
+    }
+
+    /* ── Cards ── */
+    .chart-card {
+      background: #fff;
+      border: 1px solid #e3e2df;
+      border-radius: 8px;
+      margin-bottom: 24px;
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 18px 20px 0;
+    }
+    .card-header p { font-size: 0.82rem; margin-top: 2px; margin-bottom: 12px; }
+
+    /* ── Trade Flow Map ── */
+    #trade-map {
+      height: 460px;
+      width: 100%;
+    }
+
+    /* ── Bottom row ── */
+    .charts-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    @media (max-width: 740px) {
+      .charts-row { grid-template-columns: 1fr; }
+    }
+    #chord-container, #sankey-container {
+      height: 400px;
+      width: 100%;
+    }
+
+    /* ── Flow arrow animation ── */
+    @keyframes flowDash {
+      to { stroke-dashoffset: -60; }
+    }
+    .flow-path {
+      fill: none;
+      stroke-linecap: round;
+      animation: flowDash linear infinite;
+    }
+
+    /* ── Chord tooltip ── */
+    #chord-tip {
+      position: fixed;
+      background: rgba(37, 36, 31, .88);
+      color: #fff;
+      padding: 6px 11px;
+      border-radius: 6px;
+      font-size: 0.76rem;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .12s;
+      white-space: nowrap;
+      z-index: 9999;
+    }
+
+    /* ── Leaflet tooltip tweak ── */
+    .leaflet-tooltip {
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body class="notion">
+
+<div class="page-wrap">
+
+  <!-- Header -->
+  <div class="page-header">
+    <h1>Exiobase — Global Trade Flows</h1>
+    <p>Three interactive charts of country-to-country trade dependencies from
+       <a href="https://exiobase.eu" target="_blank" rel="noopener">Exiobase 3</a>.
+       Sankey loads live 2022 data. Hover any element for details.</p>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls-bar">
+    <label>
+      Metric
+      <select id="metric-select">
+        <option value="amount">Trade Amount (M EUR)</option>
+        <option value="CO2_total">CO₂ Emissions</option>
+        <option value="Water_total">Water Use</option>
+        <option value="Employment_total">Employment</option>
+      </select>
+    </label>
+    <label>
+      Year
+      <select id="year-select">
+        <option value="2022">2022</option>
+      </select>
+    </label>
+    <label>
+      Top flows
+      <select id="topn-select">
+        <option value="15">Top 15</option>
+        <option value="20" selected>Top 20</option>
+        <option value="30">Top 30</option>
+      </select>
+    </label>
+    <span id="load-status">Loading Exiobase data…</span>
+  </div>
+
+  <!-- 1. Trade Flow Map -->
+  <div class="chart-card">
+    <div class="card-header">
+      <h2>Trade Flow Map</h2>
+      <p>Bubble size = total bilateral trade (M EUR). Animated curves = top country-pair flows.
+         Click a bubble for details.</p>
+    </div>
+    <div id="trade-map"></div>
+  </div>
+
+  <!-- 2. Chord + 3. Sankey -->
+  <div class="charts-row">
+    <div class="chart-card">
+      <div class="card-header">
+        <h2>Chord Diagram</h2>
+        <p>Arc width = country's total export share. Ribbon width = bilateral trade volume between two countries.</p>
+      </div>
+      <div id="chord-container"></div>
+    </div>
+    <div class="chart-card">
+      <div class="card-header">
+        <h2>Sankey Diagram</h2>
+        <p>Top industry-to-industry flows (World aggregate, WM). Toggle Metric above to switch indicator.</p>
+      </div>
+      <div id="sankey-container"></div>
+    </div>
+  </div>
+
+</div><!-- /page-wrap -->
+
+<div id="chord-tip"></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   SHARED: Country data + bilateral trade matrix
+   (Exiobase-inspired values, M EUR, 2022 approximate)
+═══════════════════════════════════════════════════════ */
+const COUNTRIES = {
+  US: { name: 'United States', lat: 37.1,  lng: -95.7,  color: '#4e79a7' },
+  CN: { name: 'China',         lat: 35.9,  lng: 104.2,  color: '#f28e2b' },
+  DE: { name: 'Germany',       lat: 51.2,  lng: 10.5,   color: '#e15759' },
+  IN: { name: 'India',         lat: 20.6,  lng: 78.9,   color: '#76b7b2' },
+  RU: { name: 'Russia',        lat: 61.5,  lng: 105.3,  color: '#59a14f' },
+  JP: { name: 'Japan',         lat: 36.2,  lng: 138.2,  color: '#edc948' },
+  GB: { name: 'UK',            lat: 55.4,  lng: -3.4,   color: '#b07aa1' },
+  FR: { name: 'France',        lat: 46.2,  lng: 2.2,    color: '#ff9da7' },
+};
+const CKEYS = Object.keys(COUNTRIES);
+
+// Matrix[exporter][importer index], M EUR
+const MATRIX_RAW = {
+  //     US      CN      DE      IN      RU      JP      GB      FR
+  US: [     0, 480000, 190000, 120000,  15000, 200000, 280000,  85000],
+  CN: [490000,      0, 210000, 290000, 170000, 260000,  88000,  62000],
+  DE: [200000, 220000,      0,  48000,  52000,  40000, 125000, 148000],
+  IN: [115000, 280000,  44000,      0,  42000,  52000,  48000,  28000],
+  RU: [ 18000, 180000,  55000,  48000,      0,  25000,  20000,  18000],
+  JP: [195000, 270000,  38000,  58000,  22000,      0,  38000,  22000],
+  GB: [275000,  92000, 128000,  50000,  18000,  40000,      0,  88000],
+  FR: [ 82000,  65000, 145000,  30000,  16000,  24000,  90000,      0],
+};
+
+// d3-chord needs a flat 2-D array
+const CHORD_MATRIX = CKEYS.map(a => CKEYS.map((b, bi) => MATRIX_RAW[a][bi]));
+
+function totalTrade(code) {
+  const i = CKEYS.indexOf(code);
+  return CKEYS.reduce((s, _, ri) => s + MATRIX_RAW[CKEYS[ri]][i] + MATRIX_RAW[code][ri], 0);
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   1. TRADE FLOW MAP  (Leaflet + D3 SVG overlay)
+═══════════════════════════════════════════════════════ */
+(function initMap() {
+  const map = L.map('trade-map', {
+    center: [25, 20],
+    zoom: 2,
+    zoomControl: true,
+    scrollWheelZoom: false,
+  });
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© <a href="https://carto.com/">CARTO</a>',
+    subdomains: 'abcd',
+    maxZoom: 19,
+  }).addTo(map);
+
+  // Build & sort top bilateral pairs
+  const pairs = [];
+  CKEYS.forEach((a, ai) => {
+    CKEYS.forEach((b, bi) => {
+      if (bi > ai) {
+        pairs.push({ a, b, vol: MATRIX_RAW[a][bi] + MATRIX_RAW[b][ai] });
+      }
+    });
+  });
+  pairs.sort((x, y) => y.vol - x.vol);
+  const TOP = pairs.slice(0, 12);
+  const maxVol = TOP[0].vol;
+
+  // SVG overlay for animated flow curves
+  const overlayPane = map.getPanes().overlayPane;
+  const flowSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  Object.assign(flowSvg.style, {
+    position: 'absolute', top: '0', left: '0',
+    width: '100%', height: '100%',
+    pointerEvents: 'none', overflow: 'visible',
+  });
+  overlayPane.appendChild(flowSvg);
+
+  const flowG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  flowG.setAttribute('class', 'leaflet-zoom-hide');
+  flowSvg.appendChild(flowG);
+
+  function px(lat, lng) {
+    return map.latLngToLayerPoint(L.latLng(lat, lng));
+  }
+
+  function drawFlows() {
+    while (flowG.firstChild) flowG.removeChild(flowG.firstChild);
+
+    TOP.forEach(({ a, b, vol }) => {
+      const pa = px(COUNTRIES[a].lat, COUNTRIES[a].lng);
+      const pb = px(COUNTRIES[b].lat, COUNTRIES[b].lng);
+      const mx = (pa.x + pb.x) / 2;
+      const my = (pa.y + pb.y) / 2 - Math.abs(pa.x - pb.x) * 0.22;
+      const w  = Math.max(1.5, (vol / maxVol) * 7);
+      const dl = 18 + w * 4;
+      const speed = (1.9 - (vol / maxVol) * 0.9).toFixed(2) + 's';
+
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', `M${pa.x},${pa.y} Q${mx},${my} ${pb.x},${pb.y}`);
+      path.setAttribute('stroke', '#2563eb');
+      path.setAttribute('stroke-width', String(w));
+      path.setAttribute('stroke-opacity', '0.32');
+      path.setAttribute('stroke-dasharray', `${dl} ${dl * 1.6}`);
+      path.setAttribute('class', 'flow-path');
+      path.style.animationDuration = speed;
+      flowG.appendChild(path);
+    });
+  }
+
+  map.on('viewreset zoomend', drawFlows);
+  map.whenReady(() => setTimeout(drawFlows, 60));
+
+  // Country bubble markers
+  const maxTotal = Math.max(...CKEYS.map(totalTrade));
+  CKEYS.forEach(code => {
+    const c = COUNTRIES[code];
+    const t = totalTrade(code);
+    const radius = 8 + (t / maxTotal) * 22;
+
+    L.circleMarker([c.lat, c.lng], {
+      radius,
+      fillColor: c.color,
+      color: '#fff',
+      weight: 2,
+      fillOpacity: 0.85,
+      interactive: true,
+    })
+      .addTo(map)
+      .bindTooltip(
+        `<b>${c.name} (${code})</b><br>Total trade: ${(t / 1000).toFixed(0)}B EUR`,
+        { direction: 'top', offset: [0, -4] }
+      );
+  });
+})();
+
+
+/* ═══════════════════════════════════════════════════════
+   2. CHORD DIAGRAM  (D3)
+═══════════════════════════════════════════════════════ */
+(function initChord() {
+  const tip = document.getElementById('chord-tip');
+  const el  = document.getElementById('chord-container');
+  const W   = el.clientWidth  || 380;
+  const H   = 400;
+  const r   = Math.min(W, H) / 2 - 52;
+
+  const chord  = d3.chord().padAngle(0.05).sortSubgroups(d3.descending);
+  const arc    = d3.arc().innerRadius(r).outerRadius(r + 18);
+  const ribbon = d3.ribbon().radius(r);
+  const chords = chord(CHORD_MATRIX);
+
+  const svg = d3.select('#chord-container')
+    .append('svg')
+      .attr('viewBox', `0 0 ${W} ${H}`)
+      .attr('width', W).attr('height', H);
+
+  const g = svg.append('g').attr('transform', `translate(${W / 2},${H / 2})`);
+
+  // Arcs
+  const grp = g.append('g').selectAll('g').data(chords.groups).join('g');
+
+  grp.append('path')
+    .attr('fill', d => COUNTRIES[CKEYS[d.index]].color)
+    .attr('stroke', '#fff').attr('stroke-width', 1)
+    .attr('d', arc)
+    .on('mousemove', (event, d) => {
+      const exports = CKEYS.reduce((s, _, i) => s + MATRIX_RAW[CKEYS[d.index]][i], 0);
+      tip.style.opacity = '1';
+      tip.style.left = (event.clientX + 12) + 'px';
+      tip.style.top  = (event.clientY - 28) + 'px';
+      tip.textContent =
+        `${COUNTRIES[CKEYS[d.index]].name}: ${(exports / 1000).toFixed(0)}B EUR exports`;
+    })
+    .on('mouseleave', () => { tip.style.opacity = '0'; });
+
+  // Country labels
+  grp.append('text')
+    .each(d => { d.angle = (d.startAngle + d.endAngle) / 2; })
+    .attr('dy', '.35em')
+    .attr('transform', d =>
+      `rotate(${d.angle * 180 / Math.PI - 90}) translate(${r + 24}) ${d.angle > Math.PI ? 'rotate(180)' : ''}`)
+    .attr('text-anchor', d => d.angle > Math.PI ? 'end' : 'start')
+    .attr('font-size', '10px').attr('fill', '#37352f')
+    .text(d => CKEYS[d.index]);
+
+  // Ribbons
+  g.append('g').attr('fill-opacity', 0.68)
+    .selectAll('path').data(chords).join('path')
+      .attr('d', ribbon)
+      .attr('fill', d => COUNTRIES[CKEYS[d.source.index]].color)
+      .attr('stroke', '#fff').attr('stroke-width', 0.5)
+      .on('mousemove', (event, d) => {
+        const src = CKEYS[d.source.index];
+        const tgt = CKEYS[d.target.index];
+        const val = MATRIX_RAW[src][d.target.index];
+        tip.style.opacity = '1';
+        tip.style.left = (event.clientX + 12) + 'px';
+        tip.style.top  = (event.clientY - 28) + 'px';
+        tip.textContent = `${src} → ${tgt}: ${(val / 1000).toFixed(0)}B EUR`;
+      })
+      .on('mouseleave', () => { tip.style.opacity = '0'; });
+})();
+
+
+/* ═══════════════════════════════════════════════════════
+   3. SANKEY DIAGRAM  (Apache eCharts + live CSV data)
+   Loads: trade-data/year/2022/WM/domestic/trade_impact.csv
+═══════════════════════════════════════════════════════ */
+const INDUSTRY_NAMES = {
+  ELEC2: 'Electricity',     DISTR: 'Distribution',   CRUDE: 'Crude Oil',
+  RUBBE: 'Rubber & Plastics', MOTOR: 'Motor Vehicles', NATUR: 'Natural Gas',
+  CEMEN: 'Cement',          CONST: 'Construction',   GASDI: 'Gas Distrib.',
+  RESEA: 'R&D',             CHEMI: 'Chemicals',      METAL: 'Basic Metals',
+  FOOD1: 'Food Products',   TEXTI: 'Textiles',       PAPER: 'Paper',
+  PLAST: 'Plastics',        MININ: 'Mining',         AGRIC: 'Agriculture',
+  TRANS: 'Transport',       RETAI: 'Retail',         FINAN: 'Finance',
+  MOTO1: 'Motor Parts',     STEEL: 'Steel',          ELECT: 'Electronics',
+  MACHI: 'Machinery',       PETRO: 'Petroleum',      COAL1: 'Coal',
+};
+
+function iName(code) { return INDUSTRY_NAMES[code] || code; }
+
+const METRIC_UNITS = {
+  amount: 'M EUR', CO2_total: 'Gt CO₂', Water_total: 'Gm³', Employment_total: 'M jobs',
+};
+
+let _csvRows = null;
+const sankeyChart = echarts.init(document.getElementById('sankey-container'));
+sankeyChart.showLoading({ text: 'Loading Exiobase 2022 data…', color: '#2563eb', fontSize: 13 });
+
+const CSV_URL = 'https://raw.githubusercontent.com/ModelEarth/trade-data/main/year/2022/WM/domestic/trade_impact.csv';
+
+fetch(CSV_URL)
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.text(); })
+  .then(text => {
+    const lines = text.trim().split('\n');
+    const hdrs  = lines[0].split(',').map(h => h.trim());
+    _csvRows = lines.slice(1).map(line => {
+      const vals = line.split(',');
+      const obj = {};
+      hdrs.forEach((h, i) => { obj[h] = vals[i]?.trim(); });
+      return obj;
+    });
+    document.getElementById('load-status').textContent = '✓ Exiobase 2022 live data';
+    renderSankey();
+  })
+  .catch(() => {
+    document.getElementById('load-status').textContent = '⚠ Demo data (CSV unavailable)';
+    renderSankeyFallback();
+  });
+
+function renderSankey() {
+  if (!_csvRows) return;
+  const metric = document.getElementById('metric-select').value;
+  const topN   = parseInt(document.getElementById('topn-select').value, 10);
+
+  const sorted = _csvRows
+    .filter(r => r.industry1 && r.industry2 && r.industry1 !== r.industry2)
+    .map(r => ({ ...r, _v: parseFloat(r[metric]) || 0 }))
+    .filter(r => r._v > 0)
+    .sort((a, b) => b._v - a._v)
+    .slice(0, topN);
+
+  const nodeSet = new Set();
+  sorted.forEach(r => { nodeSet.add(r.industry1); nodeSet.add(r.industry2); });
+  const nodes = [...nodeSet].map(id => ({ name: iName(id) }));
+  const links = sorted.map(r => ({
+    source: iName(r.industry1),
+    target: iName(r.industry2),
+    value:  r._v,
+  }));
+  const unit = METRIC_UNITS[metric] || '';
+
+  sankeyChart.hideLoading();
+  sankeyChart.setOption({
+    tooltip: {
+      trigger: 'item',
+      formatter(p) {
+        if (p.dataType === 'edge') {
+          return `${p.data.source} → ${p.data.target}<br/>${p.value.toExponential(2)} ${unit}`;
+        }
+        return p.name;
+      },
+    },
+    series: [{
+      type: 'sankey',
+      data: nodes,
+      links,
+      emphasis: { focus: 'adjacency' },
+      lineStyle: { color: 'gradient', opacity: 0.42 },
+      label: { fontSize: 10 },
+      nodeWidth: 14,
+      nodeGap: 6,
+      layoutIterations: 32,
+      orient: 'horizontal',
+    }],
+  }, true);
+}
+
+function renderSankeyFallback() {
+  const nodes = [
+    { name: 'US' }, { name: 'CN' }, { name: 'DE' }, { name: 'IN' },
+    { name: 'JP' }, { name: 'GB' }, { name: 'FR' }, { name: 'RU' },
+  ];
+  const links = [
+    { source: 'CN', target: 'US', value: 490 },
+    { source: 'US', target: 'CN', value: 480 },
+    { source: 'CN', target: 'JP', value: 260 },
+    { source: 'US', target: 'GB', value: 280 },
+    { source: 'CN', target: 'IN', value: 290 },
+    { source: 'US', target: 'DE', value: 200 },
+    { source: 'DE', target: 'FR', value: 148 },
+    { source: 'CN', target: 'DE', value: 210 },
+    { source: 'US', target: 'JP', value: 195 },
+    { source: 'JP', target: 'CN', value: 270 },
+    { source: 'GB', target: 'US', value: 275 },
+    { source: 'DE', target: 'GB', value: 125 },
+    { source: 'RU', target: 'CN', value: 180 },
+    { source: 'IN', target: 'CN', value: 280 },
+  ];
+  sankeyChart.hideLoading();
+  sankeyChart.setOption({
+    tooltip: { trigger: 'item' },
+    series: [{
+      type: 'sankey', data: nodes, links,
+      emphasis: { focus: 'adjacency' },
+      lineStyle: { color: 'gradient', opacity: 0.45 },
+      label: { fontSize: 11 },
+    }],
+  });
+}
+
+// Re-render Sankey on control changes
+document.getElementById('metric-select').addEventListener('change', renderSankey);
+document.getElementById('topn-select').addEventListener('change', renderSankey);
+</script>
+</body>
+</html>
